@@ -89,12 +89,29 @@ class VGGClassifier(tf.keras.Model):
         return x
 
 
-(x, y), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
-print(x.shape, y.shape)
-train_dataset = tf.data.Dataset.from_tensor_slices((x, y))
+def load_dataset():
+    MEAN_IMAGE = tf.constant([0.4914, 0.4822, 0.4465], dtype=tf.float32)
+    STD_IMAGE = tf.constant([0.2023, 0.1994, 0.2010], dtype=tf.float32)
+    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
+    trainset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
+    trainset = trainset.map(
+        lambda image, label: (
+            (tf.cast(image, tf.float32) / 255.0) - MEAN_IMAGE / STD_IMAGE,
+            tf.cast(label, tf.float32))
+    ).shuffle(buffer_size=1024).repeat().batch(128)
+
+    testset = tf.data.Dataset.from_tensor_slices((x_test, y_test))
+    testset = testset.map(
+        lambda image, label: (
+            (tf.cast(image, tf.float32) / 255.0) - MEAN_IMAGE / STD_IMAGE,
+            tf.cast(label, tf.float32))
+    ).batch(128)
+
+    return trainset, testset
+
 
 vgg16 = VGGClassifier(num_classes=10 + 1)
 
-for image, label in train_dataset.take(1):
-    image = tf.dtypes.cast(image, tf.float32)
-    vgg16(tf.expand_dims(image, 0))
+trainset, testset = load_dataset()
+for image, label in trainset.take(1):
+    vgg16(image)
