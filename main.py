@@ -32,9 +32,8 @@ class VGGBlock(layers.Layer):
 
 class VGGBuilder(tf.keras.Model):
     """VGG model builder"""
-    def __init__(self, name="vgg16", input_shapes=(32, 32, 3), **kwargs):
+    def __init__(self, name="vgg16", **kwargs):
         super(VGGBuilder, self).__init__(name=name, **kwargs)
-        self.input_layer = layers.InputLayer(input_shape=input_shapes)
         if name == "vgg16":
             # block num, filter num, dropout rate
             self.structures = {"stage1": [2, 64, 0.3],
@@ -56,7 +55,7 @@ class VGGBuilder(tf.keras.Model):
         self.batchnorm = layers.BatchNormalization(epsilon=1e-5)
 
     def call(self, inputs):
-        x = self.input_layer(inputs)
+        x = inputs
         for layer in self.blocks:
             x = layer(x)
             print(x.shape)
@@ -69,11 +68,32 @@ class VGGBuilder(tf.keras.Model):
         return x
 
 
+class VGGClassifier(tf.keras.Model):
+    """Classifier that outputs softmax probabilities"""
+    def __init__(self, name="vgg16_classifier",
+                 input_shapes=(32, 32, 3), num_classes=10, **kwargs):
+        super(VGGClassifier, self).__init__(name=name, **kwargs)
+        self.input_layer = layers.InputLayer(input_shape=input_shapes)
+        self.vggbuilder = VGGBuilder()
+        self.dropout = layers.Dropout(0.5)
+        self.dense = layers.Dense(num_classes)
+        self.softmax = layers.Softmax()
+
+    def call(self, inputs):
+        x = self.input_layer(inputs)
+        x = self.vggbuilder(x)
+        x = self.dropout(x)
+        x = self.dense(x)
+        x = self.softmax(x)
+        print(x.shape)
+        return x
+
+
 (x, y), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
 print(x.shape, y.shape)
 train_dataset = tf.data.Dataset.from_tensor_slices((x, y))
 
-vgg16 = VGGBuilder()
+vgg16 = VGGClassifier(num_classes=10 + 1)
 
 for image, label in train_dataset.take(1):
     image = tf.dtypes.cast(image, tf.float32)
