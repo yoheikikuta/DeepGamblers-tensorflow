@@ -1,5 +1,19 @@
 import tensorflow as tf
 from tensorflow.keras import layers
+from absl import app, flags, logging
+
+
+FLAGS = flags.FLAGS
+
+flags.DEFINE_integer(
+    'classes',
+    default=10,
+    help="The number of classes of the classification.")
+
+flags.DEFINE_float(
+    'o',
+    default=2.2,
+    help="Weight for abstention class: (1 / o) abstention_prob.")
 
 
 class VGGBlock(layers.Layer):
@@ -58,13 +72,11 @@ class VGGBuilder(tf.keras.Model):
         x = inputs
         for layer in self.blocks:
             x = layer(x)
-            print(x.shape)
         x = self.dropout(x)
         x = self.flatten(x)
         x = self.dense(x)
         x = self.relu(x)
         x = self.batchnorm(x)
-        print(x.shape)
         return x
 
 
@@ -85,8 +97,34 @@ class VGGClassifier(tf.keras.Model):
         x = self.dropout(x)
         x = self.dense(x)
         x = self.softmax(x)
-        print(x.shape)
         return x
+
+
+# Gambler loss that proposed in the paper
+def gambler_loss(model, x, y, o):
+    # \sum_{i=1}^{m} y_i log(p_i + (1 / o) p_{m+1})
+    prob = model(x)
+    class_pred, abstention = tf.split(prob, [prob.shape[1] - 1, 1], 1)
+    abstention /= o
+    weighted_prob = tf.concat([class_pred, abstention], 1)
+
+    label_shape = y.shape
+    extended_label = tf.concat([y, tf.constant(1.0, shape=[label_shape[0], 1])], 1)
+
+    log_arg = tf.reduce_sum(extended_label * weighted_prob, 1)
+    cross_ent = -tf.reduce_sum(tf.math.log(log_arg))
+
+    return cross_ent
+
+
+def train(model, optimizer, trainset, o):
+    for step, (x_batch_train, y_batch_train) in enumerate(trainset):
+        with tf.GradientTape() as tape:
+            loss = gambler_loss(model, x_batch_train, y_batch_train, o)
+            print(loss)
+
+        grads = tape.gradient(loss, model.trainable_weights)
+        optimizer.apply_gradients(zip(grads, model.trainable_weights))
 
 
 def load_dataset():
@@ -97,7 +135,7 @@ def load_dataset():
     trainset = trainset.map(
         lambda image, label: (
             (tf.cast(image, tf.float32) / 255.0) - MEAN_IMAGE / STD_IMAGE,
-            tf.cast(label, tf.float32))
+            tf.squeeze(tf.cast(tf.one_hot(label, depth=FLAGS.classes), tf.float32)))
     ).shuffle(buffer_size=1024).repeat().batch(128)
 
     testset = tf.data.Dataset.from_tensor_slices((x_test, y_test))
@@ -110,8 +148,16 @@ def load_dataset():
     return trainset, testset
 
 
-vgg16 = VGGClassifier(num_classes=10 + 1)
+def main(argv):
+    trainset, testset = load_dataset()
+    vgg16 = VGGClassifier(num_classes=FLAGS.classes + 1)  # +1 is for abstention class
+    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 
-trainset, testset = load_dataset()
-for image, label in trainset.take(1):
-    vgg16(image)
+    for epoch in range(2):
+        print(f"Start of epoch {epoch + 1}")
+        train(vgg16, optimizer, trainset, FLAGS.o)
+
+
+if __name__ == "__main__":
+    logging.set_verbosity(logging.INFO)
+    app.run(main)
