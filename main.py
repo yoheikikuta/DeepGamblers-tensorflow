@@ -12,7 +12,7 @@ flags.DEFINE_integer(
 
 flags.DEFINE_float(
     'o',
-    default=2.2,
+    default=4.2,
     help="Weight for abstention class: (1 / o) abstention_prob.")
 
 
@@ -26,7 +26,8 @@ class VGGBlock(layers.Layer):
     def __init__(self, name=None, num_filter=32,
                  dropout_rate=0.3, is_last=False, **kwargs):
         super(VGGBlock, self).__init__(name=name, **kwargs)
-        self.conv = layers.Conv2D(filters=num_filter, kernel_size=3, padding="same")
+        self.conv = layers.Conv2D(filters=num_filter, kernel_size=3, padding="same",
+                                  kernel_regularizer=tf.keras.regularizers.l2(5e-4))
         self.relu = layers.ReLU()
         self.batchnorm = layers.BatchNormalization(epsilon=1e-5)
         self.dropout = layers.Dropout(dropout_rate)
@@ -64,7 +65,8 @@ class VGGBuilder(tf.keras.Model):
                                                 dropout_rate, is_last))
         self.dropout = layers.Dropout(0.5)
         self.flatten = layers.Flatten()
-        self.dense = layers.Dense(512)
+        self.dense = layers.Dense(512,
+                                  kernel_regularizer=tf.keras.regularizers.l2(5e-4))
         self.relu = layers.ReLU()
         self.batchnorm = layers.BatchNormalization(epsilon=1e-5)
 
@@ -88,7 +90,8 @@ class VGGClassifier(tf.keras.Model):
         self.input_layer = layers.InputLayer(input_shape=input_shapes)
         self.vggbuilder = VGGBuilder()
         self.dropout = layers.Dropout(0.5)
-        self.dense = layers.Dense(num_classes)
+        self.dense = layers.Dense(num_classes,
+                                  kernel_regularizer=tf.keras.regularizers.l2(5e-4))
         self.softmax = layers.Softmax()
 
     def call(self, inputs):
@@ -127,21 +130,28 @@ def train(model, optimizer, trainset, o):
         optimizer.apply_gradients(zip(grads, model.trainable_weights))
 
 
+def data_augmentation(x):
+    x = tf.image.random_flip_left_right(x)
+    x = tf.pad(x, tf.constant([[2, 2], [2, 2], [0, 0]]), "REFLECT")
+    x = tf.image.random_crop(x, size=[32, 32, 3])
+    return x
+
+
 def load_dataset():
-    MEAN_IMAGE = tf.constant([0.4914, 0.4822, 0.4465], dtype=tf.float32)
-    STD_IMAGE = tf.constant([0.2023, 0.1994, 0.2010], dtype=tf.float32)
+    MEAN = tf.constant([0.4914, 0.4822, 0.4465], dtype=tf.float32)
+    STD = tf.constant([0.2023, 0.1994, 0.2010], dtype=tf.float32)
     (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
     trainset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
     trainset = trainset.map(
         lambda image, label: (
-            (tf.cast(image, tf.float32) / 255.0) - MEAN_IMAGE / STD_IMAGE,
+            data_augmentation((tf.cast(image, tf.float32) / 255.0) - MEAN / STD),
             tf.squeeze(tf.cast(tf.one_hot(label, depth=FLAGS.classes), tf.float32)))
     ).shuffle(buffer_size=1024).repeat().batch(128)
 
     testset = tf.data.Dataset.from_tensor_slices((x_test, y_test))
     testset = testset.map(
         lambda image, label: (
-            (tf.cast(image, tf.float32) / 255.0) - MEAN_IMAGE / STD_IMAGE,
+            (tf.cast(image, tf.float32) / 255.0) - MEAN / STD,
             tf.cast(label, tf.float32))
     ).batch(128)
 
@@ -151,7 +161,7 @@ def load_dataset():
 def main(argv):
     trainset, testset = load_dataset()
     vgg16 = VGGClassifier(num_classes=FLAGS.classes + 1)  # +1 is for abstention class
-    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+    optimizer = tf.keras.optimizers.SGD(learning_rate=1e-4, momentum=0.9)
 
     for epoch in range(2):
         print(f"Start of epoch {epoch + 1}")
