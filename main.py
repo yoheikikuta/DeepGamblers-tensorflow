@@ -1,7 +1,7 @@
+import numpy as np
 import tensorflow as tf
-from tensorflow.keras import layers
 from absl import app, flags, logging
-
+from tensorflow.keras import layers
 
 FLAGS = flags.FLAGS
 
@@ -12,7 +12,7 @@ flags.DEFINE_integer(
 
 flags.DEFINE_float(
     'o',
-    default=4.2,
+    default=2.2,
     help="Weight for abstention class: (1 / o) abstention_prob.")
 
 
@@ -34,14 +34,14 @@ class VGGBlock(layers.Layer):
         self.pooling = layers.MaxPool2D(pool_size=(2, 2))
         self.is_last = is_last
 
-    def call(self, inputs):
+    def call(self, inputs, training=True):
         x = self.conv(inputs)
         x = self.relu(x)
-        x = self.batchnorm(x)
+        x = self.batchnorm(x, training)
         if self.is_last:
             x = self.pooling(x)
         else:
-            x = self.dropout(x)
+            x = self.dropout(x, training)
         return x
 
 
@@ -70,15 +70,15 @@ class VGGBuilder(tf.keras.Model):
         self.relu = layers.ReLU()
         self.batchnorm = layers.BatchNormalization(epsilon=1e-5)
 
-    def call(self, inputs):
+    def call(self, inputs, training=True):
         x = inputs
         for layer in self.blocks:
-            x = layer(x)
-        x = self.dropout(x)
+            x = layer(x, training)
+        x = self.dropout(x, training)
         x = self.flatten(x)
         x = self.dense(x)
         x = self.relu(x)
-        x = self.batchnorm(x)
+        x = self.batchnorm(x, training)
         return x
 
 
@@ -88,16 +88,16 @@ class VGGClassifier(tf.keras.Model):
                  input_shapes=(32, 32, 3), num_classes=10, **kwargs):
         super(VGGClassifier, self).__init__(name=name, **kwargs)
         self.input_layer = layers.InputLayer(input_shape=input_shapes)
-        self.vggbuilder = VGGBuilder()
+        self.vgg = VGGBuilder()
         self.dropout = layers.Dropout(0.5)
         self.dense = layers.Dense(num_classes,
                                   kernel_regularizer=tf.keras.regularizers.l2(5e-4))
         self.softmax = layers.Softmax()
 
-    def call(self, inputs):
+    def call(self, inputs, training=True):
         x = self.input_layer(inputs)
-        x = self.vggbuilder(x)
-        x = self.dropout(x)
+        x = self.vgg(x, training)
+        x = self.dropout(x, training)
         x = self.dense(x)
         x = self.softmax(x)
         return x
@@ -106,7 +106,9 @@ class VGGClassifier(tf.keras.Model):
 # Gambler loss that proposed in the paper
 def gambler_loss(model, x, y, o):
     # \sum_{i=1}^{m} y_i log(p_i + (1 / o) p_{m+1})
+    EPS = 1e-5
     prob = model(x)
+    prob = tf.clip_by_value(prob, EPS, 1.0 - EPS)
     class_pred, abstention = tf.split(prob, [prob.shape[1] - 1, 1], 1)
     abstention /= o
     weighted_prob = tf.concat([class_pred, abstention], 1)
@@ -115,7 +117,7 @@ def gambler_loss(model, x, y, o):
     extended_label = tf.concat([y, tf.constant(1.0, shape=[label_shape[0], 1])], 1)
 
     log_arg = tf.reduce_sum(extended_label * weighted_prob, 1)
-    cross_ent = -tf.reduce_sum(tf.math.log(log_arg))
+    cross_ent = -tf.reduce_mean(tf.math.log(log_arg))
 
     return cross_ent
 
@@ -130,6 +132,18 @@ def train(model, optimizer, trainset, o):
         optimizer.apply_gradients(zip(grads, model.trainable_weights))
 
 
+def evaluate(model, testset):
+    training = False
+    predictions = np.array([], dtype=np.float32).reshape(0, 11)
+    answers = np.array([], dtype=np.int8).reshape(0)
+    for (x_batch_test, y_batch_test) in testset:
+        preds = model(x_batch_test, training)
+        predictions = np.vstack([predictions, preds.numpy()])
+        answers = np.hstack([answers, y_batch_test.numpy().flatten()])
+
+    return predictions, answers
+
+
 def data_augmentation(x):
     x = tf.image.random_flip_left_right(x)
     x = tf.pad(x, tf.constant([[2, 2], [2, 2], [0, 0]]), "REFLECT")
@@ -141,18 +155,20 @@ def load_dataset():
     MEAN = tf.constant([0.4914, 0.4822, 0.4465], dtype=tf.float32)
     STD = tf.constant([0.2023, 0.1994, 0.2010], dtype=tf.float32)
     (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
+    # x_train, y_train = x_train[:128 * 10], y_train[:128 * 10]
+    # x_test, y_test = x_test[:128 * 1], y_test[:128 * 1]
     trainset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
     trainset = trainset.map(
         lambda image, label: (
             data_augmentation((tf.cast(image, tf.float32) / 255.0) - MEAN / STD),
             tf.squeeze(tf.cast(tf.one_hot(label, depth=FLAGS.classes), tf.float32)))
-    ).shuffle(buffer_size=1024).repeat().batch(128)
+    ).shuffle(buffer_size=1024).batch(128)
 
     testset = tf.data.Dataset.from_tensor_slices((x_test, y_test))
     testset = testset.map(
         lambda image, label: (
             (tf.cast(image, tf.float32) / 255.0) - MEAN / STD,
-            tf.cast(label, tf.float32))
+            label)
     ).batch(128)
 
     return trainset, testset
@@ -161,11 +177,14 @@ def load_dataset():
 def main(argv):
     trainset, testset = load_dataset()
     vgg16 = VGGClassifier(num_classes=FLAGS.classes + 1)  # +1 is for abstention class
-    optimizer = tf.keras.optimizers.SGD(learning_rate=1e-4, momentum=0.9)
+    optimizer = tf.keras.optimizers.SGD(learning_rate=5e-3, momentum=0.9)
 
     for epoch in range(2):
         print(f"Start of epoch {epoch + 1}")
         train(vgg16, optimizer, trainset, FLAGS.o)
+
+    predictions, answers = evaluate(vgg16, testset)
+    print(sum([np.argmax(elem) for elem in predictions] == answers))
 
 
 if __name__ == "__main__":
