@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import tensorflow as tf
 from absl import app, flags, logging
@@ -14,6 +16,16 @@ flags.DEFINE_float(
     'o',
     default=2.2,
     help="Weight for abstention class: (1 / o) abstention_prob.")
+
+flags.DEFINE_string(
+    'model_dir',
+    default="model_dir",
+    help="Directory where checkpoints will be saved.")
+
+flags.DEFINE_float(
+    'decay_rate',
+    default=0.5,
+    help="Decay rate of the learning rate.")
 
 
 class VGGBlock(layers.Layer):
@@ -155,8 +167,8 @@ def load_dataset():
     MEAN = tf.constant([0.4914, 0.4822, 0.4465], dtype=tf.float32)
     STD = tf.constant([0.2023, 0.1994, 0.2010], dtype=tf.float32)
     (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
-    # x_train, y_train = x_train[:128 * 10], y_train[:128 * 10]
-    # x_test, y_test = x_test[:128 * 1], y_test[:128 * 1]
+    x_train, y_train = x_train[:128 * 1], y_train[:128 * 1]
+    x_test, y_test = x_test[:128 * 1], y_test[:128 * 1]
     trainset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
     trainset = trainset.map(
         lambda image, label: (
@@ -177,11 +189,18 @@ def load_dataset():
 def main(argv):
     trainset, testset = load_dataset()
     vgg16 = VGGClassifier(num_classes=FLAGS.classes + 1)  # +1 is for abstention class
-    optimizer = tf.keras.optimizers.SGD(learning_rate=5e-3, momentum=0.9)
+    optimizer = tf.keras.optimizers.SGD(learning_rate=1e-2, momentum=0.9)
+    decay_rate = FLAGS.decay_rate
+    root = tf.train.Checkpoint(optimizer=optimizer, model=vgg16)
 
-    for epoch in range(2):
+    for epoch in range(300):
         print(f"Start of epoch {epoch + 1}")
+        if epoch + 1 in [25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 275]:
+            optimizer.lr = optimizer.lr * decay_rate
         train(vgg16, optimizer, trainset, FLAGS.o)
+        if (epoch + 1) % 25 == 0:
+            root.save(os.path.join(os.path.dirname(__file__),
+                                   FLAGS.model_dir, "./ckpt"))
 
     predictions, answers = evaluate(vgg16, testset)
     print(sum([np.argmax(elem) for elem in predictions] == answers))
