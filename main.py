@@ -27,6 +27,11 @@ flags.DEFINE_float(
     default=0.5,
     help="Decay rate of the learning rate.")
 
+flags.DEFINE_integer(
+    'pretrain',
+    default=100,
+    help="Pretraining epochs.")
+
 
 class VGGBlock(layers.Layer):
     """VGG model building block
@@ -111,7 +116,7 @@ class VGGClassifier(tf.keras.Model):
         x = self.vgg(x, training)
         x = self.dropout(x, training)
         x = self.dense(x)
-        x = self.softmax(x)
+        # x = self.softmax(x)
         return x
 
 
@@ -119,7 +124,8 @@ class VGGClassifier(tf.keras.Model):
 def gambler_loss(model, x, y, o):
     # \sum_{i=1}^{m} y_i log(p_i + (1 / o) p_{m+1})
     EPS = 1e-5
-    prob = model(x)
+    logit = model(x)
+    prob = tf.nn.softmax(logit)
     prob = tf.clip_by_value(prob, EPS, 1.0 - EPS)
     class_pred, abstention = tf.split(prob, [prob.shape[1] - 1, 1], 1)
     abstention /= o
@@ -129,16 +135,27 @@ def gambler_loss(model, x, y, o):
     extended_label = tf.concat([y, tf.constant(1.0, shape=[label_shape[0], 1])], 1)
 
     log_arg = tf.reduce_sum(extended_label * weighted_prob, 1)
-    cross_ent = -tf.reduce_mean(tf.math.log(log_arg))
+    loss = -tf.reduce_mean(tf.math.log(log_arg))
 
-    return cross_ent
+    return loss
 
 
-def train(model, optimizer, trainset, o):
+def cross_entropy_loss(model, x, y):
+    logit = model(x)
+    class_logit, abstention = tf.split(logit, [logit.shape[1] - 1, 1], 1)
+    loss = tf.reduce_mean(
+        tf.nn.softmax_cross_entropy_with_logits(labels=y, logits=class_logit))
+
+    return loss
+
+
+def train(model, optimizer, trainset, o, epoch, pretrain_num):
     for step, (x_batch_train, y_batch_train) in enumerate(trainset):
         with tf.GradientTape() as tape:
-            loss = gambler_loss(model, x_batch_train, y_batch_train, o)
-            print(loss)
+            if epoch <= pretrain_num:
+                loss = cross_entropy_loss(model, x_batch_train, y_batch_train)
+            else:
+                loss = gambler_loss(model, x_batch_train, y_batch_train, o)
 
         grads = tape.gradient(loss, model.trainable_weights)
         optimizer.apply_gradients(zip(grads, model.trainable_weights))
@@ -197,7 +214,7 @@ def main(argv):
         print(f"Start of epoch {epoch + 1}")
         if epoch + 1 in [25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 275]:
             optimizer.lr = optimizer.lr * decay_rate
-        train(vgg16, optimizer, trainset, FLAGS.o)
+        train(vgg16, optimizer, trainset, FLAGS.o, epoch + 1, FLAGS.pretrain)
         if (epoch + 1) % 25 == 0:
             root.save(os.path.join(os.path.dirname(__file__),
                                    FLAGS.model_dir, "./ckpt"))
