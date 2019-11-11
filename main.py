@@ -245,6 +245,7 @@ def load_dataset():
 
 
 def main(argv):
+    logging.info('Download Data.')
     trainset, testset = load_dataset()
 
     vgg16 = VGGClassifier(num_classes=FLAGS.classes + 1)  # +1 is for abstention class
@@ -252,6 +253,7 @@ def main(argv):
     root = tf.train.Checkpoint(model=vgg16, optimizer=optimizer)
 
     if FLAGS.train:
+        logging.info('Train Model.')
         for epoch in range(FLAGS.total_epoch):
             print(f"Start of epoch {epoch + 1}")
             if epoch + 1 in FLAGS.lr_decay_epoch:
@@ -262,6 +264,7 @@ def main(argv):
                           FLAGS.model_dir, "./ckpt"))
 
     if FLAGS.eval:
+        logging.info('Evaluate Model.')
         root.restore(os.path.join(os.path.dirname(__file__),
                                   FLAGS.model_dir, FLAGS.ckpt)).expect_partial()
         evaluate(root.model, testset, FLAGS.coverages)
