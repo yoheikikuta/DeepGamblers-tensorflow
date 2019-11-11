@@ -27,10 +27,35 @@ flags.DEFINE_float(
     default=0.5,
     help="Decay rate of the learning rate.")
 
+flags.DEFINE_bool(
+    'train',
+    default=False,
+    help="Do traning if True.")
+
+flags.DEFINE_bool(
+    'eval',
+    default=True,
+    help="Do evaluation if True, this requires a checkpoint including a model.")
+
 flags.DEFINE_integer(
-    'pretrain',
+    'total_epoch',
+    default=300,
+    help="Total training epochs.")
+
+flags.DEFINE_integer(
+    'pretrain_epoch',
     default=100,
     help="Pretraining epochs.")
+
+flags.DEFINE_list(
+    'coverages',
+    default=[1.00, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50],
+    help="Coverage list.")
+
+flags.DEFINE_string(
+    'ckpt',
+    default="ckpt-12",
+    help="Prefix of checkpoint that saves a trained model and optimizer.")
 
 
 class VGGBlock(layers.Layer):
@@ -161,7 +186,7 @@ def train(model, optimizer, trainset, o, epoch, pretrain_num):
         optimizer.apply_gradients(zip(grads, model.trainable_weights))
 
 
-def evaluate(model, testset):
+def evaluate(model, testset, coverages):
     training = False
     predictions = np.array([], dtype=np.float32).reshape(0, 11)
     answers = np.array([], dtype=np.int8).reshape(0)
@@ -170,7 +195,14 @@ def evaluate(model, testset):
         predictions = np.vstack([predictions, preds.numpy()])
         answers = np.hstack([answers, y_batch_test.numpy().flatten()])
 
-    return predictions, answers
+    probs = tf.nn.softmax(predictions).numpy()
+    result = np.hstack([probs, answers.reshape(len(probs), 1)])
+    result = result[result[:, -2].argsort()]  # Sort by abstention score.
+
+    for cov in coverages:
+        sub_result = result[:int(len(result) * cov)]
+        acc = sum([np.argmax(elem) for elem in sub_result[:, :-2]] == sub_result[:, -1])
+        print(f"Coverage: {cov:.2f}, Error: {(1.0 - acc / len(sub_result)) * 100:.2f}%")
 
 
 def data_augmentation(x):
@@ -184,8 +216,6 @@ def load_dataset():
     MEAN = tf.constant([0.4914, 0.4822, 0.4465], dtype=tf.float32)
     STD = tf.constant([0.2023, 0.1994, 0.2010], dtype=tf.float32)
     (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
-    x_train, y_train = x_train[:128 * 1], y_train[:128 * 1]
-    x_test, y_test = x_test[:128 * 1], y_test[:128 * 1]
     trainset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
     trainset = trainset.map(
         lambda image, label: (
@@ -205,22 +235,25 @@ def load_dataset():
 
 def main(argv):
     trainset, testset = load_dataset()
+
     vgg16 = VGGClassifier(num_classes=FLAGS.classes + 1)  # +1 is for abstention class
     optimizer = tf.keras.optimizers.SGD(learning_rate=1e-2, momentum=0.9)
-    decay_rate = FLAGS.decay_rate
-    root = tf.train.Checkpoint(optimizer=optimizer, model=vgg16)
+    root = tf.train.Checkpoint(model=vgg16, optimizer=optimizer)
 
-    for epoch in range(300):
-        print(f"Start of epoch {epoch + 1}")
-        if epoch + 1 in [25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 275]:
-            optimizer.lr = optimizer.lr * decay_rate
-        train(vgg16, optimizer, trainset, FLAGS.o, epoch + 1, FLAGS.pretrain)
-        if (epoch + 1) % 25 == 0:
-            root.save(os.path.join(os.path.dirname(__file__),
-                                   FLAGS.model_dir, "./ckpt"))
+    if FLAGS.train:
+        for epoch in range(FLAGS.total_epoch):
+            print(f"Start of epoch {epoch + 1}")
+            if epoch + 1 in [25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 275]:
+                optimizer.lr = optimizer.lr * FLAGS.decay_rate
+            train(vgg16, optimizer, trainset, FLAGS.o, epoch + 1, FLAGS.pretrain_epoch)
+            if (epoch + 1) % 25 == 0:
+                root.save(os.path.join(os.path.dirname(__file__),
+                          FLAGS.model_dir, "./ckpt"))
 
-    predictions, answers = evaluate(vgg16, testset)
-    print(sum([np.argmax(elem) for elem in predictions] == answers))
+    if FLAGS.eval:
+        root.restore(os.path.join(os.path.dirname(__file__),
+                                  FLAGS.model_dir, FLAGS.ckpt)).expect_partial()
+        evaluate(root.model, testset, FLAGS.coverages)
 
 
 if __name__ == "__main__":
