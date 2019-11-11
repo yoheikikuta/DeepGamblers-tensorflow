@@ -48,6 +48,16 @@ flags.DEFINE_integer(
     help="Pretraining epochs.")
 
 flags.DEFINE_list(
+    'lr_decay_epoch',
+    default=[25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 275],
+    help="Epoch list where the learning rate will be decayed.")
+
+flags.DEFINE_integer(
+    'save_interval',
+    default=25,
+    help="Epoch interval where the model will be saved.")
+
+flags.DEFINE_list(
     'coverages',
     default=[1.00, 0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.65, 0.60, 0.55, 0.50],
     help="Coverage list.")
@@ -220,7 +230,8 @@ def load_dataset():
     trainset = trainset.map(
         lambda image, label: (
             data_augmentation((tf.cast(image, tf.float32) / 255.0) - MEAN / STD),
-            tf.squeeze(tf.cast(tf.one_hot(label, depth=FLAGS.classes), tf.float32)))
+            tf.squeeze(tf.cast(tf.one_hot(label,
+                                          depth=len(np.unique(y_train))), tf.float32)))
     ).shuffle(buffer_size=1024).batch(128)
 
     testset = tf.data.Dataset.from_tensor_slices((x_test, y_test))
@@ -243,10 +254,10 @@ def main(argv):
     if FLAGS.train:
         for epoch in range(FLAGS.total_epoch):
             print(f"Start of epoch {epoch + 1}")
-            if epoch + 1 in [25, 50, 75, 100, 125, 150, 175, 200, 225, 250, 275]:
+            if epoch + 1 in FLAGS.lr_decay_epoch:
                 optimizer.lr = optimizer.lr * FLAGS.decay_rate
             train(vgg16, optimizer, trainset, FLAGS.o, epoch + 1, FLAGS.pretrain_epoch)
-            if (epoch + 1) % 25 == 0:
+            if (epoch + 1) % FLAGS.save_interval == 0:
                 root.save(os.path.join(os.path.dirname(__file__),
                           FLAGS.model_dir, "./ckpt"))
 
