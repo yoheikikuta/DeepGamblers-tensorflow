@@ -86,14 +86,14 @@ class VGGBlock(layers.Layer):
         self.pooling = layers.MaxPool2D(pool_size=(2, 2))
         self.is_last = is_last
 
-    def call(self, inputs, training=True):
+    def call(self, inputs, is_training=True):
         x = self.conv(inputs)
         x = self.relu(x)
-        x = self.batchnorm(x, training)
+        x = self.batchnorm(x, is_training)
         if self.is_last:
             x = self.pooling(x)
         else:
-            x = self.dropout(x, training)
+            x = self.dropout(x, is_training)
         return x
 
 
@@ -122,15 +122,15 @@ class VGGBuilder(tf.keras.Model):
         self.relu = layers.ReLU()
         self.batchnorm = layers.BatchNormalization(epsilon=1e-5)
 
-    def call(self, inputs, training=True):
+    def call(self, inputs, is_training=True):
         x = inputs
         for layer in self.blocks:
-            x = layer(x, training)
-        x = self.dropout(x, training)
+            x = layer(x, is_training)
+        x = self.dropout(x, is_training)
         x = self.flatten(x)
         x = self.dense(x)
         x = self.relu(x)
-        x = self.batchnorm(x, training)
+        x = self.batchnorm(x, is_training)
         return x
 
 
@@ -146,10 +146,10 @@ class VGGClassifier(tf.keras.Model):
                                   kernel_regularizer=tf.keras.regularizers.l2(5e-4))
         self.softmax = layers.Softmax()
 
-    def call(self, inputs, training=True):
+    def call(self, inputs, is_training=True):
         x = self.input_layer(inputs)
-        x = self.vgg(x, training)
-        x = self.dropout(x, training)
+        x = self.vgg(x, is_training)
+        x = self.dropout(x, is_training)
         x = self.dense(x)
         return x
 
@@ -232,11 +232,11 @@ def train(model, optimizer, trainset, o, epoch, pretrain_num):
 
 # Model evaluation function.
 def evaluate(model, testset, coverages):
-    training = False
+    is_training = False
     predictions = np.array([], dtype=np.float32).reshape(0, 11)
     answers = np.array([], dtype=np.int8).reshape(0)
     for (x_batch_test, y_batch_test) in testset:
-        preds = model(x_batch_test, training)
+        preds = model(x_batch_test, is_training)
         predictions = np.vstack([predictions, preds.numpy()])
         answers = np.hstack([answers, y_batch_test.numpy().flatten()])
 
