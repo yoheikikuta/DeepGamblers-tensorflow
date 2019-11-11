@@ -151,11 +151,10 @@ class VGGClassifier(tf.keras.Model):
         x = self.vgg(x, training)
         x = self.dropout(x, training)
         x = self.dense(x)
-        # x = self.softmax(x)
         return x
 
 
-# Gambler loss that proposed in the paper
+# Gambler loss that is proposed in the paper.
 def gambler_loss(model, x, y, o):
     # \sum_{i=1}^{m} y_i log(p_i + (1 / o) p_{m+1})
     EPS = 1e-5
@@ -184,7 +183,42 @@ def cross_entropy_loss(model, x, y):
     return loss
 
 
+# Data augumentation function including LR flipping and random cropping.
+def data_augmentation(x):
+    x = tf.image.random_flip_left_right(x)
+    x = tf.pad(x, tf.constant([[2, 2], [2, 2], [0, 0]]), "REFLECT")
+    x = tf.image.random_crop(x, size=[32, 32, 3])
+    return x
+
+
+# Data loading function with data augmentation.
+def load_dataset():
+    MEAN = tf.constant([0.4914, 0.4822, 0.4465], dtype=tf.float32)
+    STD = tf.constant([0.2023, 0.1994, 0.2010], dtype=tf.float32)
+
+    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
+
+    trainset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
+    trainset = trainset.map(
+        lambda image, label: (
+            data_augmentation((tf.cast(image, tf.float32) / 255.0) - MEAN / STD),
+            tf.squeeze(tf.cast(tf.one_hot(label,
+                                          depth=len(np.unique(y_train))), tf.float32)))
+    ).shuffle(buffer_size=1024).batch(128)
+
+    testset = tf.data.Dataset.from_tensor_slices((x_test, y_test))
+    testset = testset.map(
+        lambda image, label: (
+            (tf.cast(image, tf.float32) / 255.0) - MEAN / STD,
+            label)
+    ).batch(128)
+
+    return trainset, testset
+
+
+# Model training function.
 def train(model, optimizer, trainset, o, epoch, pretrain_num):
+    # Use a simple cross entropy loss within the pretraining.
     for step, (x_batch_train, y_batch_train) in enumerate(trainset):
         with tf.GradientTape() as tape:
             if epoch <= pretrain_num:
@@ -196,6 +230,7 @@ def train(model, optimizer, trainset, o, epoch, pretrain_num):
         optimizer.apply_gradients(zip(grads, model.trainable_weights))
 
 
+# Model evaluation function.
 def evaluate(model, testset, coverages):
     training = False
     predictions = np.array([], dtype=np.float32).reshape(0, 11)
@@ -213,35 +248,6 @@ def evaluate(model, testset, coverages):
         sub_result = result[:int(len(result) * cov)]
         acc = sum([np.argmax(elem) for elem in sub_result[:, :-2]] == sub_result[:, -1])
         print(f"Coverage: {cov:.2f}, Error: {(1.0 - acc / len(sub_result)) * 100:.2f}%")
-
-
-def data_augmentation(x):
-    x = tf.image.random_flip_left_right(x)
-    x = tf.pad(x, tf.constant([[2, 2], [2, 2], [0, 0]]), "REFLECT")
-    x = tf.image.random_crop(x, size=[32, 32, 3])
-    return x
-
-
-def load_dataset():
-    MEAN = tf.constant([0.4914, 0.4822, 0.4465], dtype=tf.float32)
-    STD = tf.constant([0.2023, 0.1994, 0.2010], dtype=tf.float32)
-    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
-    trainset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
-    trainset = trainset.map(
-        lambda image, label: (
-            data_augmentation((tf.cast(image, tf.float32) / 255.0) - MEAN / STD),
-            tf.squeeze(tf.cast(tf.one_hot(label,
-                                          depth=len(np.unique(y_train))), tf.float32)))
-    ).shuffle(buffer_size=1024).batch(128)
-
-    testset = tf.data.Dataset.from_tensor_slices((x_test, y_test))
-    testset = testset.map(
-        lambda image, label: (
-            (tf.cast(image, tf.float32) / 255.0) - MEAN / STD,
-            label)
-    ).batch(128)
-
-    return trainset, testset
 
 
 def main(argv):
